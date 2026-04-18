@@ -1,5 +1,3 @@
-Here's a file-by-file walkthrough of the project, organized so a partner can understand the algorithm without reading every line of code.
-
 ## `go_fish_bot.py` — the competition bot
 
 This is the main deliverable: ~600 lines of pure-Python (standard library only) that reads a game-state JSON file and prints exactly one move in the required format. Internally it's split into ten labeled sections, each of which is its own concern:
