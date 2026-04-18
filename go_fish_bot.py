@@ -1000,7 +1000,7 @@ class GoFishBot:
     def to_output_json(move: LegalMove, rank_style: str = "single") -> str:
         """
         Emit EXACTLY:
-            {"Requestee":"player name", "Request":"rank"}
+            {"Request":"rank", "Requestee":"player name"}
         with no trailing whitespace, no pretty-printing, and no extra keys.
 
         Parameters
@@ -1017,8 +1017,8 @@ class GoFishBot:
             r = "1"
         # We intentionally build the JSON manually to guarantee key order
         # and key capitalization match the organizer's spec exactly.
-        return ('{"Requestee":%s, "Request":%s}'
-                % (json.dumps(move.requestee), json.dumps(r)))
+        return ('{"Request":%s, "Requestee":%s}'
+                % (json.dumps(r), json.dumps(move.requestee)))
 
 
 # ============================================================================
