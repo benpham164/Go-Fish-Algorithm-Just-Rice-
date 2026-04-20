@@ -776,7 +776,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Competitive Go Fish bot.")
     ap.add_argument("file", nargs="?", default=None,
                     help="path to JSON game-state; defaults to stdin")
-    ap.add_argument("--name", "-n", default=None,
+    ap.add_argument("--name", "-n", default="just_rice",
                     help="this bot's player name (or set GOFISH_BOT_NAME)")
     ap.add_argument("--no-mc", action="store_true",
                     help="skip the Monte-Carlo tie-breaker")
