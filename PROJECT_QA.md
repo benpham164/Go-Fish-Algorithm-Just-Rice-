@@ -1,129 +1,53 @@
-# Go Fish Bot — Project Q&A
-
-A write-up of the design, problem, solution, algorithm, and troubleshooting process for the competition Go Fish bot.
+Here's a walkthrough of the full pipeline:
 
 ---
 
-## 1. How did we come up with the solution?
+**Stage 1: Parsing & Cleaning**
 
-We started by reading every file the organizer provided — the Box note that documents the JSON schema, and the five state snapshots (`first-turn.json`, `first-turn-fillable.json`, `mid-game.json`, `late-game.json`, `game-review.json`). That let us reverse-engineer the exact data format instead of guessing: `Players[]`, `Turns[]`, `OutOfPlay`, `Hand`, `Deck`.
-
-From the turn history we also noticed real-world quirks (e.g., invalid `"Rank": "1"` entries) that forced us to write defensive cleaning rather than a strict parser. Once the data structure was pinned down, the strategy design followed the objective: maximize completed sets, which means every decision reduces to *"which ask gives the highest expected value toward finishing books, net of what it reveals."*
+Before anything else, the bot normalizes all raw data. Every rank token in the JSON passes through `clean_rank()`, which uppercases it, maps `"T"` to `"10"`, and silently drops `"1"` (an invalid rank that appears in some history files). `parse_hand()` handles both `[[rank, suit], ...]` and `[rank, ...]` card formats. Any turn in the history with an invalid rank gets dropped entirely so it can't corrupt the probability model later.
 
 ---
 
-## 2. What is the problem?
+**Stage 2: GameState**
 
-Go Fish is a hidden-information, multi-agent game where a bot must choose both:
-
-- **whom to ask**, and
-- **what rank to ask for**
-
-…every turn, under the strict legality rule that you can only ask for ranks you already hold.
-
-A weak bot ignores everything except its own hand. A strong bot must:
-
-- track history,
-- infer hidden holdings across 2–4 opponents, and
-- — most importantly in a bot-vs-bot setting — account for the fact that every ask leaks information the other bots will exploit.
-
-The competition also requires clean handling of partial states and slightly dirty data.
+`GameState.from_raw()` builds a cleaned snapshot of everything the bot knows: our hand, every player's hand size and set count, the stock size, and the full turn log. One subtle job here is resolving our own name — it tries the CLI `--name` arg first, then the `GOFISH_BOT_NAME` env var, and finally auto-detects by finding the player whose recorded hand size matches the length of our actual hand. If the JSON has a blank name slot (the organizer's "fillable" test format), it gets replaced with our name. Player list order is preserved as-is because it matches turn order.
 
 ---
 
-## 3. How did we solve that?
+**Stage 3: Inference**
 
-We built a four-stage pipeline in one Python module:
+This is where the bot builds a belief model for each opponent by replaying the entire turn log from scratch. For every turn, it extracts three facts: the requester must have held at least one of the rank they asked for (you can only ask for what you have), a successful transfer tells us exactly how many cards changed hands, and a failed ask proves the requestee had zero of that rank at that moment.
 
-1. **Parse and clean** the JSON — dropping invalid ranks, filling blank-name slots, handling two different file schemas.
-2. **Build a full game-state model** of everything we know (our hand, deck size, completed sets, opponent hand sizes, turn history).
-3. **Run an inference engine** that replays every historical turn and maintains per-opponent "knowledge":
-   - `known[rank]` — lower-bound card counts,
-   - `cannot_hold[rank]` with an age counter that decays as opponents draw,
-   - `interest[rank]` — how often they've asked for it,
-   - style flags (greedy, follower).
-4. **Score every legal `(requestee, rank)` pair** with a utility function that rewards sets, triples, and pairs, penalizes information reveal weighted by turn-order distance, and adds a denial bonus for pulling cards from dangerous opponents.
-5. **Tiebreak with a Monte Carlo sampler** that deals hidden cards consistent with constraints, simulates one turn of play, and blends that estimate with the analytical score.
+These facts populate two key data structures per opponent. `known[rank]` is a lower-bound count — if we saw someone receive 2 Queens, we know they hold at least 2. `cannot_hold[rank]` is an aging constraint — after a failed ask, the opponent is marked as holding zero of that rank, but the constraint fades as they draw cards (incremented by 1 per draw, expired after 4 draws) since they might have drawn that rank since. A permanent tombstone (age 99) is set when a rank is completed and all 4 cards leave play.
+
+The engine also tracks `interest[rank]` (how often an opponent has asked for it, a tell for what they're collecting) and does light style classification — labeling opponents as "greedy" (same rank three asks in a row) or "follower" (chasing ranks others just failed on).
+
+For probability queries, `prob_opponent_has()` works through three cases in priority order: if `known[rank] >= 1`, return 1.0 immediately. If there's a fresh `cannot_hold` constraint, return a dampened probability (capped at 0.30) based on how many draws have happened since. Otherwise, use the hypergeometric distribution — given how many unseen copies of the rank exist and how many uncommitted card slots the opponent has, what's the probability at least one slot holds that rank?
 
 ---
 
-## 4. How does the algorithm work?
+**Stage 4: MoveEvaluator**
 
-On each turn the bot does four things:
+Every legal `(opponent, rank)` pair is scored by expected value: `p × success_value + (1 − p) × failure_value`, then adjusted with two additional terms.
 
-### Step 1 — Replay the turn log
+The success value is tiered — completing a set of 4 is worth 12 points, forming a triple 4.5, a pair 1.6, a single 0.4 — plus a flat continuation bonus for keeping your turn. The failure value isn't purely negative: it includes an information credit (you learned the opponent doesn't have it), and if the stock is non-empty, a small bonus for the probability you lucky-draw the rank you just asked for.
 
-Every ask proves the asker held ≥1 of that rank. Every success moves a known count and zeroes the giver's count for that rank. Every failure zeros the requestee and flags a draw that ages prior constraints. Every completed set permanently removes all four copies from consideration.
+On top of the base EV, two corrections are applied. The denial bonus rewards pulling cards from a dangerous opponent — one who already has many known cards and is close to completing sets. The reveal penalty accounts for the fact that asking advertises you hold a rank: every opponent after you in turn order can exploit this before you play again. The penalty is weighted by turn-order distance with geometric decay (0.70 per step), multiplied by how many copies of the rank you'd still hold after the ask. If the ask completes a set, the penalty is zero since the cards leave play.
 
-### Step 2 — Compute hypergeometric probabilities
-
-The "unseen pool" = opponents' uncommitted hand cards + deck.
-
-`P(opp has rank) = 1 − P(zero of the remaining copies of that rank landed in their uncommitted slots)`
-
-### Step 3 — Enumerate and score every legal ask
-
-Only ranks currently in our hand, only live opponents:
-
-```
-score = P(success) × value_of_success
-      + P(fail)    × (penalty + info_value)
-      + denial_bonus
-      − reveal_penalty
-```
-
-- `value_of_success` jumps hard at pair, triple, and especially at completing a set.
-- `reveal_penalty` decays with turn-order distance (`0.70^i`), so leaking information right before a dangerous player costs more than leaking it right after.
-
-### Step 4 — Monte Carlo re-rank
-
-The top candidates are re-ranked by Monte Carlo: sample full hidden states, play one turn forward, average the reward. The best blended move is emitted as:
-
-```json
-{"Requestee": "...", "Request": "..."}
-```
+All legal moves are scored this way and sorted descending.
 
 ---
 
-## 5. How did we troubleshoot the issue?
+**Stage 5: Monte Carlo**
 
-We built two independent test drivers and iterated against their output.
+The top 6 candidates from the heuristic evaluator are refined by running 96 sampled rollouts. `sample_world()` builds a plausible hidden game state: it constructs a pool of all cards not in our hand or out-of-play, shuffles it, seeds each opponent's hand with their `known` cards, then fills their remaining uncommitted slots from the pool while respecting fresh `cannot_hold` constraints (cards the opponent was recently proven not to hold).
 
-### `test_harness.py`
+For each sampled world, `_rollout()` simulates one turn ahead: if the opponent has the rank, cards transfer and reward accumulates using the same tier structure. On success it also takes one more greedy step — finding the best follow-up ask in that world for a shallow second-ply estimate. On failure, the bot draws from stock and checks if it got lucky. A soft defensive penalty fires if the ask would leave cards in hand that an opponent is close to collecting — decayed by turn-order distance.
 
-Runs the bot on every uploaded JSON and asserts legality:
-
-- rank is in hand,
-- requestee is a real live opponent,
-- rank isn't already out of play.
-
-This caught early data-cleaning bugs like the `"1"` rank and the game-review schema having hands inside `Players[]` instead of at the top level.
-
-### `simulate_gofish.py`
-
-A full 4-player Go Fish engine with baseline opponents (Random, Greedy, Tracker, Probabilistic). Running **1,000-game tournaments** against each gave reliable win-rate numbers and exposed a real weakness — a table of three Tracker bots dropped our win rate to ~37%.
-
-### Diagnosis and sweep
-
-We diagnosed it as the reveal-penalty coefficient being too small for a pure-tracker field, then swept that weight across five settings to confirm no simple single-knob fix existed (it stayed in the 29–38% range), which told us the fix needs a targeted stealth mode rather than a parameter tweak.
-
-### Tunable design
-
-Throughout, we kept the tuning constants exposed as class attributes so future fixes are a one-line change.
+After 96 samples, the average reward is the MC estimate for that move.
 
 ---
 
-## Summary of measured performance
+**Final decision**
 
-1,000 games per matchup (6,000 games total):
-
-| Opponents                                | Win rate  | Avg sets (of 13) |
-|------------------------------------------|-----------|------------------|
-| 3 × Random                               | 83.6%     | 6.11             |
-| 3 × Greedy                               | 80.5%     | 6.12             |
-| 3 × Probabilistic                        | 69.3%     | 5.39             |
-| 3 × Tracker                              | 36.7%     | 3.96             |
-| Mixed (Greedy + Tracker + Random)        | 75.7%     | 5.65             |
-| Strong mix (Greedy + Tracker + Prob.)    | 68.8%     | 5.42             |
-
-**Overall average: ~69% win rate in a 4-player game** (vs. the 25% a random seat would earn).
+The heuristic score and MC estimate are blended 55/45 and the highest blended score wins. The result is printed as `{"Requestee": "playerName", "Request": "rank"}` — the only thing written to stdout.
