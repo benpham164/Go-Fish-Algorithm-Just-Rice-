@@ -774,7 +774,7 @@ def run_tests(my_name: Optional[str], debug: bool = False,
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Competitive Go Fish bot.")
-    ap.add_argument("--file", "-f", default=None,
+    ap.add_argument("file", nargs="?", default=None,
                     help="path to JSON game-state; defaults to stdin")
     ap.add_argument("--name", "-n", default=None,
                     help="this bot's player name (or set GOFISH_BOT_NAME)")

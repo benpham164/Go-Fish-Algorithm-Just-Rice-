@@ -1,57 +1,49 @@
 {
   "Players": [
     {
-      "Name": "steven",
-      "Sets": 0,
-      "HandSize": 7
-    },
-    {
-      "Name": "vaughn",
-      "Sets": 0,
-      "HandSize": 7
-    },
-    {
       "Name": "haris",
       "Sets": 0,
-      "HandSize": 7
+      "HandSize": 5
     },
     {
       "Name": "alyser",
       "Sets": 0,
-      "HandSize": 7
+      "HandSize": 5
+    },
+    {
+      "Name": "steven",
+      "Sets": 0,
+      "HandSize": 5
+    },
+    {
+      "Name": "vaughn",
+      "Sets": 0,
+      "HandSize": 5
     }
   ],
   "Turns": [],
   "OutOfPlay": [],
   "Hand": [
     [
+      "5",
+      "H"
+    ],
+    [
+      "Q",
+      "C"
+    ],
+    [
       "2",
       "C"
     ],
     [
-      "9",
-      "D"
-    ],
-    [
-      "4",
-      "S"
+      "10",
+      "H"
     ],
     [
       "J",
-      "S"
-    ],
-    [
-      "3",
-      "H"
-    ],
-    [
-      "3",
-      "S"
-    ],
-    [
-      "K",
       "H"
     ]
   ],
-  "Deck": 24
+  "Deck": 32
 }
